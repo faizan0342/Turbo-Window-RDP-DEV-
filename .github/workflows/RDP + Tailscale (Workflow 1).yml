@@ -52,9 +52,7 @@ jobs:
 
     steps:
 
-      # --------------------------
-      # 1. Decide runtime
-      # --------------------------
+      # 1. Calculate runtime
       - name: Decide runtime
         id: dec
         run: |
@@ -63,44 +61,33 @@ jobs:
           if($runtime -gt 355){ $runtime = 355 }
           "runtime=$runtime" | Out-File $env:GITHUB_OUTPUT -Append
 
-      # --------------------------
       # 2. Install Tailscale
-      # --------------------------
       - name: Install Tailscale
         run: |
-          Write-Host "Downloading Tailscale installer..."
-          $installer = "$env:TEMP\tailscale-installer.exe"
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
-            -OutFile $installer -UseBasicParsing
+          $msi = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi" -OutFile $msi
+          Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait
 
-          Write-Host "Running installer..."
-          Start-Process $installer -ArgumentList "/quiet" -Wait
-          Start-Sleep -Seconds 8
-
-          $ts1 = "C:\Program Files\Tailscale\tailscale.exe"
-          $ts2 = "C:\Program Files (x86)\Tailscale\tailscale.exe"
-
-          if (Test-Path $ts1) { "$ts1" | Out-File tailscale_path.txt }
-          elseif (Test-Path $ts2) { "$ts2" | Out-File tailscale_path.txt }
-          else { Write-Error "Tailscale FAILED to install!" }
-
-      # --------------------------
-      # 3. Login Tailscale
-      # --------------------------
+      # 3. Login to Tailscale
       - name: Login Tailscale
         run: |
-          $ts = Get-Content tailscale_path.txt
-          & $ts logout 2>$null
-          & $ts up --authkey "${{ inputs.ts_authkey }}" `
-                   --hostname "bullet-${{ matrix.id }}" `
-                   --accept-routes `
-                   --accept-dns
-          Write-Host "Tailscale IP Address:"
-          & $ts ip -4 | Select-Object -First 1
+          $ts1 = "C:\Program Files\Tailscale\tailscale.exe"
+          $ts2 = "C:\Program Files (x86)\Tailscale\tailscale.exe"
+          if (Test-Path $ts1) { $ts = $ts1 }
+          elseif (Test-Path $ts2) { $ts = $ts2 }
+          else { Write-Error "Tailscale executable not found!" ; exit 1 }
 
-      # --------------------------
-      # 4. Create RDP user and enable RDP
-      # --------------------------
+          Write-Host "Using Tailscale path: $ts"
+
+          try { & $ts logout } catch { Write-Host "No previous session to logout" }
+
+          & $ts up --authkey "${{ inputs.ts_authkey }}" --hostname "bullet-${{ matrix.id }}" --accept-routes --accept-dns
+
+          Write-Host "Tailscale IP Address:"
+          $ip = & $ts ip -4 | Select-Object -First 1
+          Write-Host $ip
+
+      # 4. Enable RDP and create user
       - name: Enable RDP
         run: |
           net user $env:RDP_USER $env:RDP_PASS /add
@@ -108,30 +95,38 @@ jobs:
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
 
-      # --------------------------
-      # 5. Runtime loop
-      # --------------------------
-      - name: Keep alive
+      # 5. Runtime wait (keep alive)
+      - name: Wait (runtime)
         run: |
           $end = (Get-Date).AddMinutes([int]"${{ steps.dec.outputs.runtime }}")
           while((Get-Date) -lt $end){
             Write-Host "RDP active - $(Get-Date)"
-            Start-Sleep -Seconds 60
+            Start-Sleep 60
           }
 
-      # --------------------------
-      # 6. Auto-cycle (Workflow restart)
-      # --------------------------
+      # 6. Auto-cycle trigger
       - name: Auto cycle trigger
         if: ${{ inputs.cycles_left != '0' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $next = [int]"${{ inputs.cycles_left }}" - 1
-          gh workflow run "RDP + Tailscale (Workflow 1)" `
-            -f ts_tailnet="${{ inputs.ts_tailnet }}" `
-            -f ts_api_key="${{ inputs.ts_api_key }}" `
-            -f ts_authkey="${{ inputs.ts_authkey }}" `
-            -f rdp_count="${{ inputs.rdp_count }}" `
-            -f do_purge="${{ inputs.do_purge }}" `
-            -f runtime_minutes="${{ inputs.runtime_minutes }}" `
-            -f quick_test="${{ inputs.quick_test }}" `
-            -f cycles_left="$next"
+
+          $url  = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/workflows/rdp2.yml/dispatches"
+          $hdr  = @{ Authorization = "Bearer $env:GH_TOKEN"; "Accept"="application/vnd.github+json" }
+
+          $body = @{
+            ref = $env:GITHUB_REF_NAME
+            inputs = @{
+              ts_tailnet    = "${{ inputs.ts_tailnet }}"
+              ts_api_key    = "${{ inputs.ts_api_key }}"
+              ts_authkey    = "${{ inputs.ts_authkey }}"
+              rdp_count     = "${{ inputs.rdp_count }}"
+              do_purge      = "${{ inputs.do_purge }}"
+              runtime_minutes = "${{ inputs.runtime_minutes }}"
+              quick_test    = "${{ inputs.quick_test }}"
+              cycles_left   = "$next"
+            }
+          } | ConvertTo-Json -Depth 20
+
+          Invoke-WebRequest -Method POST -Uri $url -Headers $hdr -Body $body
