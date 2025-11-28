@@ -2,7 +2,7 @@ name: RDP + Tailscale (Workflow 1)
 
 on:
   workflow_dispatch:
-  
+
     inputs:
       ts_tailnet:         { description: "Tailscale tailnet", required: true }
       ts_api_key:         { description: "Tailscale API key", required: true }
