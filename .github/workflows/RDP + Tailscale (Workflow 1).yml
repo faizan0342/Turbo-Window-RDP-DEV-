@@ -10,7 +10,7 @@ on:
       runtime_minutes:    { description: "Runtime minutes", default: "355" }
       do_purge:           { description: "Purge bullet* devices", default: "true" }
       rdp_count:          { description: "RDP instance count", default: "1" }
-      cycles_left:        { description: "Cycles left", default: "99" }
+      cycles_left:        { description: "Number of cycles", default: "99" }
 
 permissions:
   contents: read
@@ -22,6 +22,9 @@ defaults:
 
 jobs:
 
+  # ───────────────────────────────────────────────────────────────────────────────
+  # MATRIX BUILDER
+  # ───────────────────────────────────────────────────────────────────────────────
   setup:
     runs-on: ubuntu-latest
     outputs:
@@ -30,14 +33,16 @@ jobs:
       - id: mk
         run: |
           $n = [int]"${{ inputs.rdp_count }}"
-          if($n -lt 1){$n=1}
-          if($n -gt 10){$n=10}
-          $arr=@()
-          for($i=1; $i -le $n; $i++){ $arr+=@{id=$i} }
-          $json=@{include=$arr} | ConvertTo-Json -Compress
+          if($n -lt 1){$n = 1}
+          if($n -gt 10){$n = 10}
+          $arr = @()
+          for($i = 1; $i -le $n; $i++){ $arr += @{ id = $i } }
+          $json = @{ include = $arr } | ConvertTo-Json -Compress
           "matrix=$json" | Out-File $env:GITHUB_OUTPUT -Append
 
-
+  # ───────────────────────────────────────────────────────────────────────────────
+  # WINDOWS RDP INSTANCE
+  # ───────────────────────────────────────────────────────────────────────────────
   rdp:
     needs: setup
     runs-on: windows-latest
@@ -57,32 +62,38 @@ jobs:
         run: |
           function Yes($v){ "$v" -match '^(?i:true|1|yes|on)$' }
           $runtime = if(Yes("${{ inputs.quick_test }}")) { 5 } else { [int]"${{ inputs.runtime_minutes }}" }
-          if($runtime -gt 355){ $runtime = 355 }
+          if ($runtime -gt 355) { $runtime = 355 }
           "runtime=$runtime" | Out-File $env:GITHUB_OUTPUT -Append
 
-
-      # 2. Install Tailscale (fixed)
+      # ────────────────────────────────────────────────────────────────────────────
+      # 2. Install Tailscale (WORKING FIX)
+      # ────────────────────────────────────────────────────────────────────────────
       - name: Install Tailscale
         run: |
           iwr https://pkgs.tailscale.com/stable/tailscale-windows-latest.exe -OutFile "$env:TEMP\tailscale.exe"
           Start-Process "$env:TEMP\tailscale.exe" -ArgumentList "/quiet" -Wait
 
-
-      # 3. Connect Tailscale
+      # ────────────────────────────────────────────────────────────────────────────
+      # 3. Tailscale Login
+      # ────────────────────────────────────────────────────────────────────────────
       - name: Connect Tailscale
         run: |
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          while (-not (Test-Path $ts)) { Start-Sleep -Seconds 2 }
+          while (-not (Test-Path $ts)) {
+            Write-Host "Waiting for Tailscale to install..."
+            Start-Sleep -Seconds 2
+          }
 
           & $ts logout
           & $ts up --authkey "${{ inputs.ts_authkey }}" --hostname "bullet-${{ matrix.id }}" --accept-routes
 
-          Write-Host "Tailscale IPv4:"
+          Write-Host "Tailscale IP (IPv4):"
           & $ts ip -4
 
-
-      # 4. Enable RDP + Create User
+      # ────────────────────────────────────────────────────────────────────────────
+      # 4. Enable RDP + Create Admin User
+      # ────────────────────────────────────────────────────────────────────────────
       - name: Enable RDP
         run: |
           net user $env:RDP_USER $env:RDP_PASS /add
@@ -90,18 +101,20 @@ jobs:
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
 
-
-      # 5. Keep Windows runner alive
+      # ────────────────────────────────────────────────────────────────────────────
+      # 5. Keep the Windows machine alive
+      # ────────────────────────────────────────────────────────────────────────────
       - name: Runtime wait
         run: |
           $end = (Get-Date).AddMinutes([int]"${{ steps.dec.outputs.runtime }}")
           while((Get-Date) -lt $end){
-            Write-Host "RDP Active - $(Get-Date)"
+            Write-Host "RDP active at $(Get-Date)"
             Start-Sleep 60
           }
 
-
-      # 6. Auto-cycle
+      # ────────────────────────────────────────────────────────────────────────────
+      # 6. Auto-cycle (rerun workflow)
+      # ────────────────────────────────────────────────────────────────────────────
       - name: Auto-cycle
         if: ${{ inputs.cycles_left != '0' }}
         run: |
