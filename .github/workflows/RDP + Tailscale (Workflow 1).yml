@@ -2,7 +2,6 @@ name: RDP + Tailscale (Workflow 1)
 
 on:
   workflow_dispatch:
-
     inputs:
       ts_tailnet:         { description: "Tailscale tailnet", required: true }
       ts_api_key:         { description: "Tailscale API key", required: true }
@@ -11,7 +10,7 @@ on:
       runtime_minutes:    { description: "Runtime minutes", default: "355" }
       do_purge:           { description: "Purge bullet* devices", default: "true" }
       rdp_count:          { description: "RDP instance count", default: "1" }
-      cycles_left:        { description: "Number of cycles", default: "99" }
+      cycles_left:        { description: "Cycles left", default: "99" }
 
 permissions:
   contents: read
@@ -22,6 +21,7 @@ defaults:
     shell: pwsh
 
 jobs:
+
   setup:
     runs-on: ubuntu-latest
     outputs:
@@ -36,6 +36,7 @@ jobs:
           for($i=1; $i -le $n; $i++){ $arr+=@{id=$i} }
           $json=@{include=$arr} | ConvertTo-Json -Compress
           "matrix=$json" | Out-File $env:GITHUB_OUTPUT -Append
+
 
   rdp:
     needs: setup
@@ -59,33 +60,29 @@ jobs:
           if($runtime -gt 355){ $runtime = 355 }
           "runtime=$runtime" | Out-File $env:GITHUB_OUTPUT -Append
 
-      # 2. Install Tailscale
+
+      # 2. Install Tailscale (fixed)
       - name: Install Tailscale
         run: |
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
-          $dst = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $url -OutFile $dst
-          Start-Process msiexec.exe -ArgumentList "/i `"$dst`" /quiet /norestart" -Wait
+          iwr https://pkgs.tailscale.com/stable/tailscale-windows-latest.exe -OutFile "$env:TEMP\tailscale.exe"
+          Start-Process "$env:TEMP\tailscale.exe" -ArgumentList "/quiet" -Wait
 
-      # 3. Login to Tailscale
+
+      # 3. Connect Tailscale
       - name: Connect Tailscale
         run: |
-          $ts = Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
 
-          # Wait until installed
-          while(-not(Test-Path $ts)){ Start-Sleep -Seconds 2 }
+          while (-not (Test-Path $ts)) { Start-Sleep -Seconds 2 }
 
-          # logout any previous session (optional)
           & $ts logout
-
-          # login using authkey
           & $ts up --authkey "${{ inputs.ts_authkey }}" --hostname "bullet-${{ matrix.id }}" --accept-routes
 
-          # print IP
-          Write-Host "Tailscale IP:"
+          Write-Host "Tailscale IPv4:"
           & $ts ip -4
 
-      # 4. Enable RDP and create user
+
+      # 4. Enable RDP + Create User
       - name: Enable RDP
         run: |
           net user $env:RDP_USER $env:RDP_PASS /add
@@ -93,14 +90,16 @@ jobs:
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
           netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
 
-      # 5. Keep alive
+
+      # 5. Keep Windows runner alive
       - name: Runtime wait
         run: |
           $end = (Get-Date).AddMinutes([int]"${{ steps.dec.outputs.runtime }}")
           while((Get-Date) -lt $end){
-            Write-Host "RDP active - $(Get-Date)"
+            Write-Host "RDP Active - $(Get-Date)"
             Start-Sleep 60
           }
+
 
       # 6. Auto-cycle
       - name: Auto-cycle
